@@ -8,3 +8,10 @@ The `gem5-arv-q-isa-simulator` folder contains the modified gem5 simulator that 
 
 The `pqc_algorithms_library` folder contains the optimized software library of the PQC algorithms.
 
+## Contributor
+
+https://github.com/YeyeQian
+
+https://github.com/KKKHHHLLL
+
+https://github.com/LKQT
