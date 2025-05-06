@@ -1,0 +1,142 @@
+let {{
+    def make_exe_code(name):
+        exe_code = ""
+        if name in ["vbutterfly_ct_vvm"]:
+            exe_code =  '''
+                uint16_t j = (i >= zeta_repeat_bound) ? (i % zeta_repeat_bound) : i;
+                uint16_t zeta_index = j / shared_zeta_num;
+                vi zeta = v0[zeta_index];
+                uint32_t index_vd = (i*2) >= elemPerVecReg ? (i*2 - elemPerVecReg) : (i*2);
+                butterfly_ct<vi, vi_double>(&Vd_vi[index_vd], Vs2_vi[i], Vs1_vi[i], zeta, modulus_q, q_inv);
+                        '''
+        elif name in ["vbutterfly_gs_vvm"]:
+            exe_code =  '''
+                // zeta_index_pre as a prepare for obtain zeta_index
+                uint16_t zeta_index_pre = (i - start_pos) + (microIdx * vlane);
+                uint16_t j = (zeta_index_pre >= zeta_repeat_bound) ? (zeta_index_pre % zeta_repeat_bound) : zeta_index_pre;
+                uint16_t zeta_index = j / shared_zeta_num;
+                vi zeta = v0[zeta_index];
+                uint32_t index_vd = (i*2) >= elemPerVecReg ? (i*2 - elemPerVecReg) : (i*2);
+                butterfly_gs<vi, vi_double>(&Vd_vi[index_vd], Vs2_vi[i], Vs1_vi[i], zeta, modulus_q, q_inv);
+                        '''            
+        elif name in ["vmod_basemul_vvm"]:
+            exe_code =  '''
+                vi zeta = v0[i/2];
+                basemul_2x2<vi, vi_double>(&Vd_vi[i], &Vs1_vi[i], &Vs2_vi[i], zeta, modulus_q, q_inv);
+                        '''
+        elif name in ["rej_sample_vx"]:
+            exe_code =  '''
+                uint32_t valid_num = 0;
+                vu bound = Rs1_vu;
+                for(uint32_t i = 0; i < vl; i++) {
+                    if(Vs2_vu[i] < bound) {
+                        Vd_vu[valid_num] = Vs2[i];
+                        valid_num += 1;
+                    }
+                }
+                xc->setMiscReg(MISCREG_VALIDNUM, valid_num);
+                        '''
+        elif name in ["pack_vx"]:
+            exe_code =  '''
+            vu mask             = (1 << actual_width) - 1;
+            for(uint32_t i=0;i<vl;i++) Vs2_vu[i]&=mask;
+            for(uint32_t i = 0; i < vl; i++) {
+                uint16_t byteLowBound = getByteLowBound(i, actual_width);
+                uint16_t byteUpBound = getByteUpBound(i, actual_width);
+                uint16_t lowBound = 1 + byteLowBound;
+                uint16_t upBound = byteUpBoundDivisible(i, actual_width) ? byteUpBound - 1 : byteUpBound;
+
+                uint16_t firstShiftOffset = getFirstShiftOffset(i, byteLowBound, actual_width);
+                Vd_ub[byteLowBound] = isPackedFirstInByte(i, byteLowBound, actual_width) ? 
+                                        Vs2_vu[i] : Vd_ub[byteLowBound] | (Vs2_vu[i] << firstShiftOffset);
+                
+                for(uint32_t j = lowBound; j <= upBound; j++){
+                    uint16_t shiftOffset = getOtherShiftOffset(i, j, actual_width);
+                    Vd_ub[j] = isPackedFirstInByte(i, j, actual_width) ? 
+                                    Vs2_vu[i] >> shiftOffset : Vd_ub[j] | (Vs2_vu[i] >> shiftOffset);
+                }
+            }    
+                        '''
+        elif name in ["unpack_vx"]:
+            exe_code =  '''
+            for(uint32_t i = 0; i < vl; i++) {
+                uint16_t byteLowBound = getByteLowBound(i, actual_width);
+                uint16_t byteUpBound = getByteUpBound(i, actual_width);
+                uint16_t lowBound = 1 + byteLowBound;
+                uint16_t upBound = byteUpBoundDivisible(i, actual_width) ? byteUpBound - 1 : byteUpBound;
+
+                uint16_t firstShiftOffset = getFirstShiftOffset(i, byteLowBound, actual_width);
+                Vd_vu[i] = Vs2_ub[byteLowBound] >> firstShiftOffset;
+
+                for(uint32_t j = lowBound; j <= upBound; j++){
+                    uint16_t shiftOffset = getOtherShiftOffset(i, j, actual_width);
+                    Vd_vu[i] |= (Vs2_ub[j] << shiftOffset);
+                }
+                vu mask = (1 << actual_width) - 1;
+                Vd_vu[i] &= mask;
+            }    
+                        '''
+        elif name in ["unpacks_vx"]:
+            exe_code = '''
+            vu mask             = (1 << actual_width) - 1;
+            vu mask_sign        = 1 << (actual_width - 1);
+            vu mask_sign_ext    = - mask_sign;
+            for(uint32_t i = 0; i < vl; i++) {
+                uint16_t byteLowBound = getByteLowBound(i, actual_width);
+                uint16_t byteUpBound = getByteUpBound(i, actual_width);
+                uint16_t lowBound = 1 + byteLowBound;
+                uint16_t upBound = byteUpBoundDivisible(i, actual_width) ? byteUpBound - 1 : byteUpBound;
+
+                uint16_t firstShiftOffset = getFirstShiftOffset(i, byteLowBound, actual_width);
+                Vd_vu[i] = Vs2_ub[byteLowBound] >> firstShiftOffset;
+
+                for(uint32_t j = lowBound; j <= upBound; j++){
+                    uint16_t shiftOffset = getOtherShiftOffset(i, j, actual_width);
+                    Vd_vu[i] |= (Vs2_ub[j] << shiftOffset);
+                }
+                Vd_vu[i] &= mask;
+                if(Vd_vu[i] & mask_sign){//should do negative extension
+                    Vd_vu[i] |= mask_sign_ext;
+                }
+            }
+                       '''
+        elif name in ["bitSeqSll_vx"]:
+            exe_code = '''
+            uint16_t bseqsft_offset;
+            bseqsft_offset = xc->readMiscReg(MISCREG_BSEQSFTOFFSET);//in [0,7]
+            uint16_t shift_offset1=bseqsft_offset;
+            uint16_t shift_offset2=8-shift_offset1;
+            for(uint32_t i=vl-1;i>=1;i--){
+                Vd[i]=(Vs2[i]<<shift_offset1)|(Vs2[i-1]>>shift_offset2);
+            }
+            Vd[0]=(Vs2[0]<<shift_offset1)|(Rs1>>shift_offset2);
+            '''
+        return exe_code                                                                 
+}};
+
+// PQC Butterfly Macro instruction format...
+def format ButterflyMacroInst(code, category, *flags) {{
+    iop = InstObjParams(name, Name, 'ButterflyMacroInst', code, flags)
+
+    read_modulusq     = read_modulusq_wrapper()
+    read_qinv         = read_qinv_wrapper()
+    read_zeta_selMode = read_zetaselmode_wrapper()
+    microiop = InstObjParams(name+'_micro', 
+                Name+'Micro', 
+                'ButterflyMicroInst', 
+                {
+                    'exe_code': make_exe_code(name),
+                    'read_modulusq': read_modulusq,
+                    'read_qinv': read_qinv,
+                    'read_zeta_selMode': read_zeta_selMode
+                },
+                flags)
+
+    header_output = ButterflyMicroInstDeclare.subst(microiop) + \
+                    ButterflyMicroInstConstructor.subst(microiop) + \
+                    ButterflyMicroInstExecute.subst(microiop) + \
+                    PQCArithMacroDeclare.subst(iop) + \
+                    ButterflyMacroConstructor.subst(iop)
+    
+    decode_block = PQCArithMacroDecodeBlock.subst(iop)
+}};

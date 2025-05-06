@@ -1,0 +1,375 @@
+def template PQCArithMacroDeclare {{
+
+template<typename ElemType, typename DoubleElemType>
+class %(class_name)s : public %(base_class)s {
+private:
+    %(reg_idx_arr_decl)s;
+public:
+    %(class_name)s(ExtMachInst _machInst);
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template PQCArithMacroDecodeBlock {{
+
+switch(machInst.vtype8.vsew) {
+    case 0b001: return new %(class_name)s<int16_t, int32_t>(machInst);
+    case 0b010: return new %(class_name)s<int32_t, int64_t>(machInst);
+default: GEM5_UNREACHABLE;
+}
+
+}};
+
+
+def template VecModArithMacroConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    const uint32_t LMUL = vtype_regs_per_group(vtype);
+
+    // instruction limitations
+    panic_if(_machInst.vtype8.vsew == 0b000, "vsew = 0b000, SEW=8, is not supported");
+    panic_if(_machInst.vtype8.vsew == 0b011, "vsew = 0b011, SEW=64, is not supported");
+
+    uint32_t numMicroInst = (LMUL * elemPerVecReg) / vlane;
+    uint16_t micro_vl;
+
+    StaticInstPtr microop;
+
+    // Allow one empty micro op to hold IsLastMicroop flag
+    for (int micro_index = 0; micro_index < numMicroInst; ++micro_index) {
+        uint16_t pos = micro_index * vlane;
+        uint16_t micro_src_regOffset = pos / elemPerVecReg;
+        uint16_t micro_dst_regOffset = pos / elemPerVecReg;
+
+        if(pos >= vl) {
+            micro_vl = 0;
+        }
+        else if((vl - pos) <= vlane) {
+            micro_vl = vl - pos;
+        }
+        else {
+            micro_vl = vlane;
+        }
+
+        microop = new %(class_name)sMicro<ElemType, DoubleElemType>(_machInst, micro_index, micro_vl, 
+                                                                    micro_src_regOffset, micro_dst_regOffset);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template VecModArithMicroDeclare {{
+
+template<typename ElemType, typename DoubleElemType>
+class %(class_name)s : public %(base_class)s
+{
+private:
+    // vs1, vs2, vs3(old_vd), vm for *.vv, *.vx
+    // vs2, (old_vd), vm for *.vi
+    RegId srcRegIdxArr[4];
+    RegId destRegIdxArr[1];
+    bool vm;
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microIdx, uint16_t _microVl,
+                   uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+// need modification
+def template VecModArithMicroConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _microDstRegOffset)
+{
+    this->vm = _machInst.vm;
+    %(set_reg_idx_arr)s;
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+    %(set_dest_reg_idx)s;
+    %(set_src_reg_idx)s;
+}
+
+}};
+
+
+// need modification
+def template VecModArithMicroExecute {{
+
+template<typename ElemType, typename DoubleElemType>
+Fault
+%(class_name)s<ElemType, DoubleElemType>::execute(ExecContext* xc,
+                                  Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+
+    using vu_double [[maybe_unused]] = std::make_unsigned_t<DoubleElemType>;
+    using vi_double [[maybe_unused]] = std::make_signed_t<DoubleElemType>;
+
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+
+    %(read_modulusq)s;
+    %(read_qinv)s;
+
+    %(op_decl)s;
+    %(op_rd)s;
+    %(vm_decl_rd)s;
+    %(copy_old_vd)s;
+    %(code)s;
+    %(op_wb)s;
+
+    return NoFault;
+}
+
+}};
+
+
+def template BaseMulMacroConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    const uint32_t LMUL = vtype_regs_per_group(vtype);
+    const int32_t vlmax = vtype_VLMAX(_machInst.vtype8, false);
+
+    // instruction limitations
+    panic_if(LMUL == 4, "LMUL=8 is illegal for basemul inst (not support)");
+    panic_if(LMUL == 8, "LMUL=8 is illegal for basemul inst (not support)");
+    // panic_if(vlmax != vl, "basemul inst requests the vl equal to vlmax");
+    panic_if(_machInst.vtype8.vsew == 0b000, "vsew = 0b000, SEW=8, is not supported");
+    panic_if(_machInst.vtype8.vsew == 0b011, "vsew = 0b011, SEW=64, is not supported");
+    panic_if(_machInst.vm != 0b0, "vm should be 0");
+
+    uint16_t micro_vl = vlane * 2;
+    uint32_t numMicroInst = vlmax / (vlane * 2);
+
+    StaticInstPtr microop;
+
+    // Allow one empty micro op to hold IsLastMicroop flag
+    for (int micro_index = 0; micro_index < numMicroInst; ++micro_index) {
+        uint16_t micro_src_regOffset = (micro_index * 2*vlane) / elemPerVecReg;
+        uint16_t micro_dst_regOffset = (micro_index * 2*vlane) / elemPerVecReg;
+
+        microop = new %(class_name)sMicro<ElemType, DoubleElemType>(_machInst, micro_index, micro_vl, 
+                                                                    micro_src_regOffset, micro_dst_regOffset);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template BaseMulMicroInstDeclare {{
+
+template<typename ElemType, typename DoubleElemType>
+class %(class_name)s : public %(base_class)s
+{
+private:
+    // source regsiter: vs1, vs2, vs3(old_vd), v0
+    RegId srcRegIdxArr[4];
+    RegId destRegIdxArr[1];
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microIdx, uint16_t _microVl,
+                   uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+def template BaseMulMicroInstConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _microDstRegOffset)
+{
+    %(set_reg_idx_arr)s;
+    
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, vecRegClass[_machInst.vd + _microDstRegOffset]); // bufferfly operation is widening inst
+    _numTypedDestRegs[VecRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs1 + _microSrcRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs2 + _microSrcRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs3 + _microDstRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[0]);    // v0
+}
+
+}};
+
+
+def template BaseMulMicroInstExecute {{
+
+template<typename ElemType, typename DoubleElemType>
+Fault
+%(class_name)s<ElemType, DoubleElemType>::execute(ExecContext* xc,
+                                Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+
+    using vu_double [[maybe_unused]] = std::make_unsigned_t<DoubleElemType>;
+    using vi_double [[maybe_unused]] = std::make_signed_t<DoubleElemType>;
+
+    [[maybe_unused]] constexpr size_t sew = sizeof(vu) * 8;
+    
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    %(read_modulusq)s;
+    %(read_qinv)s;
+
+    // get destination vector register Vd
+    auto &tmp_d0 = *(RiscvISA::VecRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<vi>();
+
+    // get source vector register Vs1
+	RiscvISA::VecRegContainer tmp_s1;
+	xc->getRegOperand(this, 0, &tmp_s1);
+	auto Vs1 = tmp_s1.as<vi>();
+
+    // get source vector register Vs2
+	RiscvISA::VecRegContainer tmp_s2;
+	xc->getRegOperand(this, 1, &tmp_s2);
+	auto Vs2 = tmp_s2.as<vi>();
+
+    // copy old vd
+    [[maybe_unused]] RiscvISA::vreg_t old_vd;                        
+    [[maybe_unused]] decltype(Vd) old_Vd = nullptr;                  
+    xc->getRegOperand(this, 2, &old_vd);                           
+    old_Vd = old_vd.as<std::remove_reference_t<decltype(Vd[0])>>(); 
+    memcpy(Vd, old_Vd, VLENB);
+
+    // get source vector register v0
+	RiscvISA::VecRegContainer tmp_v0;
+	xc->getRegOperand(this, 3, &tmp_v0);
+	auto v0 = tmp_v0.as<vi>();
+
+    uint32_t start_pos = (microIdx * 2*vlane) % elemPerVecReg;
+    uint32_t end_pos   = start_pos + this-> microVl;
+
+    for(uint32_t i = start_pos; i < end_pos; i+=2) {
+        %(exe_code)s;
+    }     
+
+    // write back the results
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    };
+
+    return NoFault;
+}
+
+}};
+
+
+def template PqcNonSplitVectorInstDeclare {{
+
+template<typename ElemType>
+class %(class_name)s : public %(base_class)s {
+private:
+    // rs1, vs2, old vd
+    RegId srcRegIdxArr[3];
+    RegId destRegIdxArr[1];
+public:
+    %(class_name)s(ExtMachInst _machInst);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+def template PqcNonSplitVectorInstConstructor {{
+
+template<typename ElemType>
+%(class_name)s<ElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+
+    const uint32_t LMUL = vtype_regs_per_group(vtype);
+
+    // instruction limitations
+    panic_if(LMUL != 1, "LMUL != 1 is illegal for pqc non-split inst");
+    panic_if(_machInst.vm != 0b1, "vm should be 1, not masked execution");
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+	setDestRegIdx(_numDestRegs++, vecRegClass[VD]);
+	_numTypedDestRegs[vecRegClass.type()]++;
+
+	setSrcRegIdx(_numSrcRegs++, ((RS1) == 0) ? RegId() : intRegClass[RS1]);
+	setSrcRegIdx(_numSrcRegs++, vecRegClass[VS2]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs3]);
+
+    flags[IsInteger] = true;
+	flags[IsVector] = true;
+}
+
+}};
+
+def template PqcNonSplitVectorInstExecute {{
+
+template <typename ElemType>
+Fault
+%(class_name)s<ElemType>::execute(ExecContext* xc,
+                                    Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    %(custom_op_decl_read)s;
+    %(copy_old_vd)s;
+
+    %(panic_condition)s;
+    %(exe_code)s;
+    
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+        
+    return NoFault;
+}
+
+}};

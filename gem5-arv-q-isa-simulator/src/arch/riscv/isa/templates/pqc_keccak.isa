@@ -1,0 +1,667 @@
+def template KeccakMacroDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  RegId srcRegIdxArr[1];
+  RegId destRegIdxArr[1];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakLoadMacroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    // instruction limitations
+    panic_if(_machInst.vtype8.vsew != 0b000, "vsew of keccak load inst should be 0b000, SEW=8, other SEW types are not valid");
+
+    const uint32_t num_microops = vtype_regs_per_group(vtype);
+    int32_t tmp_vl = this->vl;
+    const int32_t micro_vlmax = vtype_VLMAX(_machInst.vtype8, true);
+    int32_t micro_vl = std::min(tmp_vl, micro_vlmax);
+    StaticInstPtr microop;
+
+    // every keccak load micro inst move data from vector register element indexed 0.
+    uint16_t micro_src_regOffset = 0;
+    // this parameter here represents the start position of message_reg that the data should be moved to.
+    uint16_t micro_dst_regOffset = 0;
+
+    // Allow one empty micro op to hold IsLastMicroop flag
+    for (int micro_index = 0; micro_index < num_microops; ++micro_index) {
+        microop = new %(class_name)sMicro(_machInst, micro_index, micro_vl, 
+                                          micro_src_regOffset, micro_dst_regOffset);
+        micro_dst_regOffset += micro_vl;                                  
+        
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+        micro_vl = std::min(tmp_vl -= micro_vl, micro_vlmax);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template KeccakMicroDeclare {{
+
+class %(class_name)s : public %(base_class)s
+{
+private:
+    RegId srcRegIdxArr[1];
+    RegId destRegIdxArr[1];
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microIdx, uint16_t _microVl,
+                   uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakLoadMicroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _microDstRegOffset)
+{
+    %(set_reg_idx_arr)s;
+    
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, keccakRegClass[0]);
+    _numTypedDestRegs[KeccakRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs2 + _microIdx]);
+}
+
+}};
+
+
+def template KeccakLoadMicroExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext* xc,
+                        Trace::InstRecord* traceData) const
+{    
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    // get destination vector register Vd, keccak message register
+    auto &tmp_d0 = *(RiscvISA::KeccakRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<uint8_t>();
+
+    // get source vector register Vs0
+	RiscvISA::VecRegContainer tmp_s0;
+	xc->getRegOperand(this, 0, &tmp_s0);
+	auto Vs0 = tmp_s0.as<uint8_t>();
+
+    // the first message load inst should reset the message_reg 
+    if(this->microIdx == 0) {
+        memset(Vd, 0, KECCAK_REG_BSIZE);
+    }
+
+    memcpy(Vd + microDstRegOffset, Vs0, this->microVl);
+    DPRINTF(KeccakDebug, "Keccak Load indexed %d: microVl=%d\n", this->microIdx, this->microVl);
+    for(int i = 0; i < 32; i++) {
+        DPRINTF(KeccakDebug, "Vs[%d]=%d, Vd_message[%d]=%d\n", i, Vs0[i], microDstRegOffset+i, Vd[microDstRegOffset+i]);
+    }
+
+    // write back the results
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    };
+
+    return NoFault;
+}
+
+}};
+
+
+def template KeccakStoreMacroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    // instruction limitations
+    panic_if(_machInst.vtype8.vsew != 0b000, "vsew of keccak store inst should be 0b000, SEW=8, other SEW types are not valid");
+
+    const uint32_t num_microops = vtype_regs_per_group(vtype);
+    int32_t tmp_vl = this->vl;
+    const int32_t micro_vlmax = vtype_VLMAX(_machInst.vtype8, true);
+    int32_t micro_vl = std::min(tmp_vl, micro_vlmax);
+    StaticInstPtr microop;
+
+    // this parameter here represents the start position of state_reg that the data should be moved from.
+    uint16_t micro_src_regOffset = 0;
+    // this parameter here represents the vector register index offset from the starting index.
+    uint16_t micro_dst_regOffset = 0;
+
+    // Allow one empty micro op to hold IsLastMicroop flag
+    for (int micro_index = 0; micro_index < num_microops; ++micro_index) {
+        microop = new %(class_name)sMicro(_machInst, micro_index, micro_vl, 
+                                          micro_src_regOffset, micro_dst_regOffset);
+        micro_src_regOffset += micro_vl;                                  
+        
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+        micro_vl = std::min(tmp_vl -= micro_vl, micro_vlmax);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template KeccakStoreMicroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _microDstRegOffset)
+{
+    %(set_reg_idx_arr)s;
+    
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, vecRegClass[_machInst.vd + _microIdx]);
+    _numTypedDestRegs[VecRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[1]);
+}
+
+}};
+
+
+def template KeccakStoreMicroExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext* xc,
+                        Trace::InstRecord* traceData) const
+{    
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    // get destination vector register Vd
+    auto &tmp_d0 = *(RiscvISA::VecRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<uint8_t>();
+
+    // get source vector register Vs, keccak state_reg
+	RiscvISA::KeccakRegContainer tmp_s;
+	xc->getRegOperand(this, 0, &tmp_s);
+	auto Vs = tmp_s.as<uint8_t>();
+
+    memcpy(Vd, Vs + microSrcRegOffset, this->microVl); 
+    DPRINTF(KeccakDebug, "Keccak Store indexed %d: microVl=%d\n", this->microIdx, this->microVl);
+    for(int i = 0; i < 32; i++) {
+        DPRINTF(KeccakDebug, "Vs_state[%d]=%d, Vd[%d]=%d\n", i+microSrcRegOffset, Vs[i+microSrcRegOffset], i, Vd[i]);
+    }
+    // write back the results
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    };
+
+    return NoFault;
+}
+
+}};
+
+
+def template KeccakInitDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  RegId srcRegIdxArr[1];
+  RegId destRegIdxArr[1];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  Fault execute(ExecContext *, Trace::InstRecord *) const override;
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakInitConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, keccakRegClass[1]);
+    _numTypedDestRegs[KeccakRegClass]++;
+
+    // actually there is no source register in keccakinit inst
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[1]);
+}
+
+}};
+
+
+def template KeccakInitExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext *xc,
+    Trace::InstRecord *traceData) const
+{
+    // get destination vector register Vd, the keccak message_reg
+    auto &tmp_d0 = *(RiscvISA::KeccakRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<uint8_t>();
+
+	memset(Vd, 0, KECCAK_REG_BSIZE);
+
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+
+    return NoFault;
+}
+
+}};
+
+
+def template KeccakAbsorbDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  RegId srcRegIdxArr[3];
+  RegId destRegIdxArr[3];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakAbsorbConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    
+    %(set_reg_idx_arr)s;
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, intRegClass[RD]);
+    _numTypedDestRegs[intRegClass.type()]++;
+    setDestRegIdx(_numDestRegs++, keccakRegClass[1]);
+    _numTypedDestRegs[KeccakRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, intRegClass[RS1]);
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[0]);
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[1]);
+
+    StaticInstPtr microop;
+
+    // firstly perform one round of keccak permutation
+    microop = new Keccak_permu(_machInst);
+    microop->setDelayedCommit();
+    this->microops.push_back(microop);
+
+    // then feedback the left un-absorbed bytes
+    microop = new Keccak_feedback(_machInst);
+    microop->setDelayedCommit();
+    this->microops.push_back(microop);
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template KeccakPermuDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  // source register: rs1(the total bytes number to be absorbed)
+  //                  message_reg and state_reg                        
+  RegId srcRegIdxArr[3];
+
+  // destination register: state_reg
+  RegId destRegIdxArr[1];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  Fault execute(ExecContext *, Trace::InstRecord *) const override;
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakFeedBackDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  // source register: rs1(the total bytes number to be absorbed)                   
+  RegId srcRegIdxArr[1];
+
+  // destination register: rd
+  RegId destRegIdxArr[1];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  Fault execute(ExecContext *, Trace::InstRecord *) const override;
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakPermuConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, keccakRegClass[1]);
+    _numTypedDestRegs[KeccakRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, intRegClass[RS1]);
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[0]);
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[1]);
+}
+
+}};
+
+
+def template KeccakFeedBackConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, intRegClass[RD]);
+    _numTypedDestRegs[intRegClass.type()]++;
+
+    setSrcRegIdx(_numSrcRegs++, intRegClass[RS1]);
+}
+
+}};
+
+
+def template KeccakPermuExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext *xc,
+    Trace::InstRecord *traceData) const
+{
+    // get destination vector register Vd, the keccak state_reg
+    auto &tmp_d0 = *(RiscvISA::KeccakRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<uint8_t>();
+
+	// get the total number of bytes to be absorbed
+    uint32_t Rs1;
+    Rs1 = xc->getRegOperand(this, 0);
+
+    // get the message_reg as source register
+	RiscvISA::KeccakRegContainer tmp_s0;
+	xc->getRegOperand(this, 1, &tmp_s0);
+	auto Vs_message = tmp_s0.as<uint8_t>();
+    for(int i = 0; i < 32; i++) {
+        DPRINTF(KeccakDebug, "Keccak permu: Vs_message[%d]=%d\n", i, Vs_message[i]);
+    }
+
+    // get the state_reg as source register
+	RiscvISA::KeccakRegContainer tmp_s1;
+	xc->getRegOperand(this, 2, &tmp_s1);
+	auto Vs_state = tmp_s1.as<uint8_t>();
+
+    %(read_keccakmode)s;
+
+    unsigned int rate;
+    uint8_t domainSeparaByte;
+    switch(keccak_mode)
+    {
+        case 0x00: {                // SHAKE-128
+            rate = SHAKE128_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHAKE128;
+            break;
+        }
+        case 0x01: {                // SHAKE-256
+            rate = SHAKE256_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHAKE256;
+            break;
+        }
+        case 0x02: {                // SHA3-256
+            rate = SHA3_256_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHA3256;
+            break;
+        }
+        case 0x03: {                // SHA3-512
+            rate = SHA3_512_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHA3512;
+            break;
+        }
+        case 0x04: {                // SHA3-384
+            rate = SHA3_384_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHA3384;
+            break;
+        }
+        default: {
+            rate = SHA3_512_RATE;
+            domainSeparaByte = DOMAIN_SEPA_BYTE_SHA3512;            
+        }                        
+    }
+
+    // get keccak state from the state_reg
+	uint64_t s[25] = {0};
+    memcpy(s, Vs_state, B_WIDTH_KECCAK_PERMU_BYTE);
+
+    // absorb rate bytes from the absorbByteLength=Rs1 input data into keccak state
+    keccak_absorb_once(s, rate, Vs_message, Rs1, domainSeparaByte);
+
+    memcpy(Vd, s, B_WIDTH_KECCAK_PERMU_BYTE);
+
+    for(int i = 0; i < 32; i++) {
+        DPRINTF(KeccakDebug, "Keccak permu: Vd_state[%d]=%d\n", i, Vd[i]);
+    }
+
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+
+    return NoFault;
+}
+
+}};
+
+
+def template KeccakFeedBackExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext *xc,
+    Trace::InstRecord *traceData) const
+{
+    // op declare
+    uint32_t Rs1;
+    uint32_t Rd;
+
+	// get the total number of bytes to be absorbed from Rs1
+    Rs1 = xc->getRegOperand(this, 0);
+
+    %(read_keccakmode)s;
+
+    unsigned int rate;
+    switch(keccak_mode)
+    {
+        case 0x00: {                // SHAKE-128
+            rate = SHAKE128_RATE;
+            break;
+        }
+        case 0x01: {                // SHAKE-256
+            rate = SHAKE256_RATE;
+            break;
+        }
+        case 0x02: {                // SHA3-256
+            rate = SHA3_256_RATE;
+            break;
+        }
+        case 0x03: {                // SHA3-512
+            rate = SHA3_512_RATE;
+            break;
+        }
+        case 0x04: {                // SHA3-384
+            rate = SHA3_384_RATE;
+            break;
+        }
+        default: {
+            rate = SHA3_512_RATE;
+        }                        
+    }
+
+    // get the left bytes number to be absorbed after this one block absorb
+    Rd = Rs1 - rate;
+
+    RegVal final_val = Rd;
+    xc->setRegOperand(this, 0, final_val);
+    if (traceData) {
+        traceData->setData(final_val);
+    }
+
+    return NoFault;
+}
+
+}};
+
+
+def template KeccakSqueezeDeclare {{
+//
+// Static instruction class for "%(mnemonic)s".
+//
+class %(class_name)s : public %(base_class)s
+{
+private:
+  RegId srcRegIdxArr[1];
+  RegId destRegIdxArr[1];
+
+public:
+  /// Constructor.
+  %(class_name)s(ExtMachInst machInst);
+  Fault execute(ExecContext *, Trace::InstRecord *) const override;
+  using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template KeccakSqueezeConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    
+    %(set_reg_idx_arr)s;
+
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, keccakRegClass[1]);
+    _numTypedDestRegs[KeccakRegClass]++;
+
+    setSrcRegIdx(_numSrcRegs++, keccakRegClass[1]);
+}
+
+}};
+
+
+def template KeccakSqueezeExecute {{
+Fault
+%(class_name)s::execute(ExecContext *xc,
+    Trace::InstRecord *traceData) const
+{
+    // get destination vector register Vd, the keccak state_reg
+    auto &tmp_d0 = *(RiscvISA::KeccakRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<uint8_t>();
+
+    // get the state_reg as source register
+	RiscvISA::KeccakRegContainer tmp_s0;
+	xc->getRegOperand(this, 0, &tmp_s0);
+	auto Vs_state = tmp_s0.as<uint8_t>();
+
+    // get keccak state from Vs1
+	uint64_t s[25] = {0};
+    memcpy(s, Vs_state, B_WIDTH_KECCAK_PERMU_BYTE);
+
+    KeccakF1600_StatePermute(s);
+
+    // write back keccak state
+    memcpy(Vd, s, B_WIDTH_KECCAK_PERMU_BYTE);
+
+
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+
+    return NoFault;
+}
+}};

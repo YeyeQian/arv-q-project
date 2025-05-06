@@ -1,0 +1,67 @@
+let {{
+    def read_modulusq_wrapper():
+        return '''
+            // read modulus Q from CSR
+            [[maybe_unused]] vi modulus_q = xc->readMiscReg(MISCREG_MODULUSQ);
+            panic_if(modulus_q == 0, "The modulus q is the initial value 0 and has not been configured yet");
+        '''
+
+    def read_qinv_wrapper():
+        return '''
+            // read QINV from CSR
+            [[maybe_unused]] vi q_inv = xc->readMiscReg(MISCREG_QINV);
+            panic_if(q_inv == 0, "The q_inv is the initial value 0 and has not been configured yet");
+        '''
+
+    def read_keccakmode_wrapper():
+        return '''
+            // read Keccak Mode from CSR
+            uint8_t keccak_mode; 
+            keccak_mode = xc->readMiscReg(MISCREG_KECCAKMODE);
+            panic_if(keccak_mode > 4, "There does not exsit such keccak mode with keccak_mode = %d", keccak_mode);
+        '''
+
+    def read_validnum_wrapper():
+        return '''
+            // read valid num of reject sample from CSR
+            uint32_t valid_num;
+            valid_num = xc->readMiscReg(MISCREG_VALIDNUM);
+        '''
+    def read_zetaselmode_wrapper():
+        return '''
+            // read zeta select mode from CSR
+            uint16_t zeta_selMode;
+            zeta_selMode = xc->readMiscReg(MISCREG_ZETASELMODE);
+            uint8_t zeta_same_mode = zeta_selMode & 0xff;
+            uint8_t zeta_repeat_mode = zeta_selMode >> 8;
+            uint32_t shared_zeta_num = 1 << zeta_same_mode;            
+            uint32_t zeta_repeat_bound = 1 << zeta_repeat_mode;
+        '''   
+    def read_gaussmode_wrapper():
+        return '''
+            // read gauss mode from CSR
+            uint16_t gauss_mode;
+            gauss_mode = xc->readMiscReg(MISCREG_GAUSSMODE);
+        '''
+    def read_bseqsftoffset_wrapper():
+        return '''
+            // read bit sequence shift left offset form CSR
+            uint16_t bseqsft_offset;
+            bseqsft_offset = xc->readMiscReg(MISCREG_BSEQSFTOFFSET);
+        '''
+    def read_primpoly_wrapper():
+        return '''
+            // read primitive polynomial form CSR
+            uint16_t prim_poly;
+            prim_poly = xc->readMiscReg(MISCREG_PRIMPOLY);
+        '''             
+}};
+
+
+def format PqcCSROp(code, *flags) {{
+    iop = InstObjParams(name, Name, 'PqcCSROp', code, flags)
+    header_output = BasicDeclare.subst(iop)
+    decoder_output = BasicConstructor.subst(iop)
+    decode_block = BasicDecode.subst(iop)
+    exec_output = PqcCSRExecute.subst(iop)
+}};

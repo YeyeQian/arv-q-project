@@ -1,0 +1,179 @@
+def template GFMacroDeclare {{
+
+template<typename ElemType>
+class %(class_name)s : public %(base_class)s {
+private:
+    %(reg_idx_arr_decl)s;
+public:
+    %(class_name)s(ExtMachInst _machInst);
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template GFWideningMacroConstructor {{
+
+template<typename ElemType>
+%(class_name)s<ElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    const int64_t vlmul = vtype_vlmul(_machInst.vtype8);
+    panic_if(vlmul == 3, "LMUL=8 is illegal for widening inst");
+
+    const uint32_t num_microops = 1 << std::max<int64_t>(0, vlmul + 1);
+
+    int32_t tmp_vl = this->vl;
+    const int32_t t_micro_vlmax = vtype_VLMAX(_machInst.vtype8, true);
+    const int32_t micro_vlmax = vlmul < 0 ? t_micro_vlmax : t_micro_vlmax / 2;
+    int32_t micro_vl = std::min(tmp_vl, micro_vlmax);
+
+    StaticInstPtr microop;
+
+    for (int micro_index = 0; micro_index < num_microops && micro_vl > 0; ++micro_index) {
+        microop = new %(class_name)sMicro<ElemType>(_machInst, micro_vl, micro_index);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+        micro_vl = std::min(tmp_vl -= micro_vlmax, micro_vlmax);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template GFMicroDeclare {{
+
+template<typename ElemType>
+class %(class_name)s : public %(base_class)s
+{
+private:
+    // vs1, vs2, vs3(old_vd), vm for *.vv, *.vx
+    // vs2, (old_vd), vm for *.vi
+    RegId srcRegIdxArr[4];
+    RegId destRegIdxArr[1];
+    bool vm;
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microVl, uint16_t _microIdx);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+// need modification
+def template GFMicroConstructor {{
+
+template<typename ElemType>
+%(class_name)s<ElemType>::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microVl, uint16_t _microIdx)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microVl, _microIdx)
+{
+    this->vm = _machInst.vm;
+    %(set_reg_idx_arr)s;
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+    %(set_dest_reg_idx)s;
+    %(set_src_reg_idx)s;
+}
+
+}};
+
+
+def template GFWideningMicroExecute {{
+
+template<typename ElemType>
+Fault
+%(class_name)s<ElemType>::execute(ExecContext* xc,
+                                  Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    const int64_t vlmul = vtype_vlmul(machInst.vtype8);
+    const int32_t t_micro_vlmax = vtype_VLMAX(machInst.vtype8, true);
+    const int32_t micro_vlmax = vlmul < 0 ? t_micro_vlmax : t_micro_vlmax / 2;
+    [[maybe_unused]] const size_t offset =
+        (this->microIdx % 2 == 0) ? 0 : micro_vlmax;
+
+    %(op_decl)s;
+    %(micro_oprd)s;
+    %(vm_decl_rd)s;
+    %(copy_old_vd)s;
+    %(code)s;
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+
+    return NoFault;
+}
+
+}};
+
+def template GFMacroConstructor {{
+
+template<typename ElemType>
+%(class_name)s<ElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+    const uint32_t num_microops = vtype_regs_per_group(vtype);
+    int32_t tmp_vl = this->vl;
+    const int32_t micro_vlmax = vtype_VLMAX(_machInst.vtype8, true);
+    int32_t micro_vl = std::min(tmp_vl, micro_vlmax);
+    StaticInstPtr microop;
+
+    for (int i = 0; i < num_microops && micro_vl > 0; ++i) {
+        microop = new %(class_name)sMicro<ElemType>(_machInst, micro_vl, i);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+        micro_vl = std::min(tmp_vl -= micro_vlmax, micro_vlmax);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+}};
+
+def template GFMicroExecute {{
+
+template <typename ElemType>
+Fault
+%(class_name)s<ElemType>::execute(ExecContext* xc,
+                                  Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+    [[maybe_unused]] constexpr size_t sew = sizeof(vu) * 8;
+
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    %(panic_condition)s;
+    %(read_csr)s;
+
+    %(op_decl)s;
+    %(micro_oprd)s;
+    %(vm_decl_rd)s;
+    %(copy_old_vd)s;
+    %(code)s;
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    }
+
+    return NoFault;
+}
+
+}};
+

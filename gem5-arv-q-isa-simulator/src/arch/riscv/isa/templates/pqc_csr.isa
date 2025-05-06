@@ -1,0 +1,27 @@
+def template PqcCSRExecute {{
+    Fault
+    %(class_name)s::execute(ExecContext *xc,
+        Trace::InstRecord *traceData) const
+    {
+        if (!valid) {
+            return std::make_shared<IllegalInstFault>(
+                    csprintf("Illegal CSR index %#x\n", pqc_csr_index), machInst);
+        }
+
+        auto tc = xc->tcBase();
+
+        %(op_decl)s;
+        %(op_rd)s;
+
+        int64_t old_csr_data = xc->readMiscReg(midx);
+
+        %(code)s;
+
+        xc->setMiscReg(midx, csr_data);
+        
+        tc->getDecoderPtr()->as<Decoder>().setPqcConfig(pqc_csr_offset);
+        
+        %(op_wb)s;
+        return NoFault;
+    }
+}};

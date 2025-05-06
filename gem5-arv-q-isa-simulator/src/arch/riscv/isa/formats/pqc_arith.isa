@@ -1,0 +1,205 @@
+let {{
+    def loopWrapper_pqc(code):
+        return  '''
+                uint32_t start_pos = microIdx * vlane - microSrcRegOffset * elemPerVecReg;
+                uint32_t end_pos   = start_pos + this-> microVl;
+                for (uint32_t i = start_pos; i < end_pos; i++) {
+                    %s     
+                }
+                ''' % (code)
+
+    def maskCondWrapper_pqc(code):
+        return "if (this->vm || elem_mask(v0, ei)) {\n" + \
+               code + "}\n"
+
+    def eiDeclarePrefix_pqc(code):
+        return '''
+               uint32_t ei = i;
+               ''' + code
+               
+    def panic_condition(name):
+        panic_cond = ""
+        if name in ["pack_vx"]:
+            panic_cond = '''
+                uint16_t actual_width = Rs1_uh;
+                panic_if((actual_width * vl) % 8 != 0, "pack inst require the packed data is aligned to bytes");
+                DPRINTF(PackUnPackDebug, "actual_width=%d: vl=%d\\n", actual_width, vl);
+                         '''
+        elif name in ["unpack_vx","unpacks_vx"]:
+            panic_cond = '''
+                uint16_t actual_width = Rs1_uh;
+                panic_if((actual_width * vl) % 8 != 0, "unpack inst require the packed data is aligned to bytes");
+                         '''
+        elif name in ["bitSeqSll_vx"]:
+            panic_cond = '''
+                panic_if(machInst.vtype8.vsew != 0b000, "vsew != 0b000, SEW != 8, is not supported");
+            '''
+        elif name in ["gfmul_vv","gfmul_vx"]:
+            panic_cond = '''
+                panic_if(machInst.vtype8.vsew != 0b000 && machInst.vtype8.vsew != 0b001, "only SEW=8/16 is supported");
+            '''
+        return panic_cond
+
+    def custom_op_decl_read(name):
+        op_decl_read = ""
+        if name in ["rej_sample_vx"]:
+            op_decl_read = '''
+            vu Rs1 = 0;
+            auto &tmp_d0 = *(RiscvISAInst::VecRegContainer *) xc->getWritableRegOperand(this, 0);
+		    auto Vd = tmp_d0.as<vu>();
+            Rs1 = xc->getRegOperand(this, 0);
+		    RiscvISAInst::VecRegContainer tmp_s1;
+		    xc->getRegOperand(this, 1, &tmp_s1);
+	    	auto Vs2 = tmp_s1.as<vu>();                           
+                           '''
+        elif name in ["pack_vx"]:
+            op_decl_read = '''
+            uint16_t Rs1 = 0;
+    		auto &tmp_d0 = *(RiscvISAInst::VecRegContainer *) xc->getWritableRegOperand(this, 0);
+		    auto Vd = tmp_d0.as<uint8_t>();
+            Rs1 = xc->getRegOperand(this, 0);
+		    RiscvISAInst::VecRegContainer tmp_s1;
+		    xc->getRegOperand(this, 1, &tmp_s1);
+		    auto Vs2 = tmp_s1.as<vu>();
+                           '''
+        elif name in ["unpack_vx","unpacks_vx"]:
+            op_decl_read = '''
+            uint16_t Rs1 = 0;
+    		auto &tmp_d0 = *(RiscvISAInst::VecRegContainer *) xc->getWritableRegOperand(this, 0);
+		    auto Vd = tmp_d0.as<vu>();
+            Rs1 = xc->getRegOperand(this, 0);
+		    RiscvISAInst::VecRegContainer tmp_s1;
+		    xc->getRegOperand(this, 1, &tmp_s1);
+		    auto Vs2 = tmp_s1.as<uint8_t>();
+                           '''
+        elif name in ["bitSeqSll_vx"]:
+            op_decl_read = '''
+            vu Rs1=0;
+            auto &tmp_d0 = *(RiscvISAInst::VecRegContainer *) xc->getWritableRegOperand(this, 0);
+		    auto Vd = tmp_d0.as<vu>();
+            Rs1 = xc->getRegOperand(this, 0);
+		    RiscvISAInst::VecRegContainer tmp_s1;
+		    xc->getRegOperand(this, 1, &tmp_s1);
+		    auto Vs2 = tmp_s1.as<vu>();
+            '''
+        return op_decl_read                                                                             
+}};
+
+def format VectorModularArithInst(code, category, *flags) {{
+    iop = InstObjParams(name, Name, 'VectorModArithMacroInst', {'code': code},
+                        flags)
+    v0_required = True
+    mask_cond = True
+    need_elem_idx = True
+    old_vd_idx = 2
+    dest_reg_id = "vecRegClass[_machInst.vd + _microDstRegOffset]"
+    src1_reg_id = ""
+    if category in ["OPIVV", "OPMVV"]:
+        src1_reg_id = "vecRegClass[_machInst.vs1 + _microSrcRegOffset]"
+    elif category in ["OPIVX", "OPMVX"]:
+        src1_reg_id = "intRegClass[_machInst.rs1]"
+    elif category == "OPIVI":
+        old_vd_idx = 1
+    else:
+        error("not supported category for VectorIntFormat: %s" % category)
+    src2_reg_id = "vecRegClass[_machInst.vs2 + _microSrcRegOffset]"
+    src3_reg_id = "vecRegClass[_machInst.vs3 + _microDstRegOffset]"
+
+    set_dest_reg_idx = setDestWrapper(dest_reg_id)
+
+    set_src_reg_idx = ""
+    if category != "OPIVI":
+        set_src_reg_idx += setSrcWrapper(src1_reg_id)
+    set_src_reg_idx += setSrcWrapper(src2_reg_id)
+    set_src_reg_idx += setSrcWrapper(src3_reg_id)
+    if v0_required:
+        set_src_reg_idx += setSrcVm()
+
+    # code
+    if mask_cond:
+        code = maskCondWrapper_pqc(code)
+    if need_elem_idx:
+        code = eiDeclarePrefix_pqc(code)
+    code = loopWrapper_pqc(code)
+
+    vm_decl_rd = ""
+    if v0_required:
+        vm_decl_rd = vmDeclAndReadData()
+
+    read_modulusq = read_modulusq_wrapper()
+    read_qinv = read_qinv_wrapper()
+
+    microiop = InstObjParams(name + "_micro",
+        Name + "Micro",
+        'VectorModArithMicroInst',
+        {'code': code,
+         'set_dest_reg_idx': set_dest_reg_idx,
+         'set_src_reg_idx': set_src_reg_idx,
+         'vm_decl_rd': vm_decl_rd,
+         'copy_old_vd': copyOldVd(old_vd_idx),
+         'read_modulusq': read_modulusq,
+         'read_qinv': read_qinv},
+        flags)
+
+    # Because of the use of templates, we had to put all parts in header to
+    # keep the compiler happy.
+    header_output = \
+        VecModArithMicroDeclare.subst(microiop) + \
+        VecModArithMicroConstructor.subst(microiop) + \
+        VecModArithMicroExecute.subst(microiop) + \
+        PQCArithMacroDeclare.subst(iop) + \
+        VecModArithMacroConstructor.subst(iop)
+
+    decode_block = PQCArithMacroDecodeBlock.subst(iop)
+}};
+
+
+def format VectorModularBaseMulInst(code, category, *flags) {{
+    iop = InstObjParams(name, Name, 'VectorModBaseMulMacroInst', code, flags)
+
+    read_modulusq     = read_modulusq_wrapper()
+    read_qinv         = read_qinv_wrapper()
+    read_zeta_selMode = read_zetaselmode_wrapper()
+    microiop = InstObjParams(name+'_micro', 
+                Name+'Micro', 
+                'VectorModBaseMulMicroInst', 
+                {
+                    'exe_code': make_exe_code(name),
+                    'read_modulusq': read_modulusq,
+                    'read_qinv': read_qinv
+                },
+                flags)
+
+    header_output = BaseMulMicroInstDeclare.subst(microiop) + \
+                    BaseMulMicroInstConstructor.subst(microiop) + \
+                    BaseMulMicroInstExecute.subst(microiop) + \
+                    PQCArithMacroDeclare.subst(iop) + \
+                    BaseMulMacroConstructor.subst(iop)
+    
+    decode_block = PQCArithMacroDecodeBlock.subst(iop)
+}};
+
+
+def format PqcNonSplitVectorInst(code, category, *flags) {{
+
+    read_modulusq = read_modulusq_wrapper()
+    read_qinv     = read_qinv_wrapper()
+    old_vd_idx    = 2
+
+    iop = InstObjParams(name, 
+                Name, 
+                'PqcNonSplitVectorInst', 
+                {
+                    'exe_code': make_exe_code(name),
+                    'copy_old_vd': copyOldVd(old_vd_idx),
+                    'panic_condition': panic_condition(name),
+                    'custom_op_decl_read': custom_op_decl_read(name)
+                },
+                flags)
+
+    header_output = PqcNonSplitVectorInstDeclare.subst(iop) + \
+                    PqcNonSplitVectorInstConstructor.subst(iop) + \
+                    PqcNonSplitVectorInstExecute.subst(iop)
+    
+    decode_block = VectorIntDecodeBlock.subst(iop)
+}};

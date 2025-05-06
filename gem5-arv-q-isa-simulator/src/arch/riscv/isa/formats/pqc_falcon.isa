@@ -1,0 +1,43 @@
+def format ChaCha20InitOp(code, *flags) {{
+
+    iop = InstObjParams(name, Name, 'ChaCha20InitMacroInst', {'code': code}, flags)
+                
+    exe_code =  '''\
+    uint32_t offset = microIdx * vtype_VLMAX(vtype, true);
+    for(uint32_t i = 0; i < this->microVl; i++) {
+        set_chacha20_buffer(offset + i, Vs2[i]);
+    }
+    if(micro_last){
+        prng_init();
+    }
+                '''
+
+    microiop = InstObjParams(name + "_micro",
+                Name + "Micro",
+                'ChaCha20InitMicroInst', 
+                {
+                    'exe_code': exe_code
+                },
+                flags)
+
+    # Because of the use of templates, we had to put all parts in header to
+    # keep the compiler happy.
+    header_output = ChaCha20InitMicroDeclare.subst(microiop) + \
+                    ChaCha20InitMacroDeclare.subst(iop)
+    
+    decoder_output = ChaCha20InitMicroConstructor.subst(microiop) + \
+                     ChaCha20InitMacroConstructor.subst(iop)
+    
+    exec_output = ChaCha20InitMicroExecute.subst(microiop)
+    
+    decode_block = BasicDecode.subst(iop)
+}};
+
+def format FalconSamplerZOp(code, *flags) {{
+    read_gaussmode = read_gaussmode_wrapper()
+    iop = InstObjParams(name, Name, 'FalconSamplerZInst',{'code': code, 'read_gaussmode':read_gaussmode}, flags)
+    header_output = FalconSamplerZDeclare.subst(iop)
+    decoder_output = FalconSamplerZConstructor.subst(iop)
+    decode_block = BasicDecode.subst(iop)
+    exec_output = FalconSamplerZExecute.subst(iop)
+}};

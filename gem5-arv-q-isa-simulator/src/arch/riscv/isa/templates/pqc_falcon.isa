@@ -1,0 +1,151 @@
+def template ChaCha20InitMacroDeclare {{
+
+class %(class_name)s : public %(base_class)s {
+private:
+    %(reg_idx_arr_decl)s;
+public:
+    %(class_name)s(ExtMachInst _machInst);
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template ChaCha20InitMacroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    const uint32_t LMUL = vtype_regs_per_group(vtype);
+    int32_t tmp_vl = this->vl;
+    const int32_t micro_vlmax = vtype_VLMAX(_machInst.vtype8, true);
+    int32_t micro_vl = std::min(tmp_vl, micro_vlmax);
+
+    // instruction limitations
+    panic_if(_machInst.vtype8.vsew != 0b000, "vsew != 0b000, SEW != 8, is not supported");
+
+    StaticInstPtr microop;
+    bool micro_last;
+    for (int micro_index = 0; micro_index < LMUL && micro_vl > 0; ++micro_index) {
+        int32_t micro_vl_tmp = std::min(tmp_vl -= micro_vlmax, micro_vlmax);
+        micro_last = !((micro_index+1)<LMUL && (micro_vl_tmp>0));
+        uint16_t micro_src_regOffset = micro_index;
+        microop = new %(class_name)sMicro(_machInst, micro_index, micro_vl, 
+                                                                    micro_src_regOffset, micro_last);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+        micro_vl = micro_vl_tmp;
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+
+
+def template ChaCha20InitMicroDeclare {{
+
+class %(class_name)s : public %(base_class)s
+{
+private:
+    RegId srcRegIdxArr[1];//only use one source vector register
+    RegId destRegIdxArr[1];//to make compiler happy, actually not used
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microIdx, uint16_t _microVl,
+                   uint16_t _microSrcRegOffset, bool _micro_last);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+
+def template ChaCha20InitMicroConstructor {{
+
+%(class_name)s::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, bool _micro_last)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _micro_last)
+{
+    setRegIdxArrays(
+        reinterpret_cast<RegIdArrayPtr>(
+            &std::remove_pointer_t<decltype(this)>::srcRegIdxArr),
+        reinterpret_cast<RegIdArrayPtr>(
+            &std::remove_pointer_t<decltype(this)>::destRegIdxArr));
+            ;
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs2 + _microIdx]);
+    setDestRegIdx(_numDestRegs++, vecRegClass[_machInst.vd]);
+}
+
+}};
+
+
+def template ChaCha20InitMicroExecute {{
+
+Fault
+%(class_name)s::execute(ExecContext* xc,
+                                  Trace::InstRecord* traceData) const
+{
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+
+    RiscvISAInst::VecRegContainer tmp_s0;
+    xc->getRegOperand(this, 0, &tmp_s0);
+    auto Vs2 = tmp_s0.as<uint8_t>();
+
+    %(exe_code)s;
+
+    return NoFault;
+}
+
+}};
+
+def template FalconSamplerZDeclare {{
+    class %(class_name)s : public %(base_class)s
+    {
+      private:
+        %(reg_idx_arr_decl)s;
+
+      public:
+        /// Constructor.
+        %(class_name)s(ExtMachInst machInst);
+        Fault execute(ExecContext *, Trace::InstRecord *) const override;
+        using %(base_class)s::generateDisassembly;
+    };
+}};
+
+
+def template FalconSamplerZConstructor {{
+    %(class_name)s::%(class_name)s(ExtMachInst machInst)
+        : %(base_class)s("%(mnemonic)s", machInst, %(op_class)s)
+    {
+        %(set_reg_idx_arr)s;
+        
+        setDestRegIdx(_numDestRegs++, floatRegClass[FD]);
+        _numTypedDestRegs[floatRegClass.type()]++;
+        setSrcRegIdx(_numSrcRegs++, floatRegClass[FS1]);
+        setSrcRegIdx(_numSrcRegs++, floatRegClass[FS2]);
+    }
+}};
+
+
+def template FalconSamplerZExecute {{
+    Fault
+    %(class_name)s::execute(ExecContext *xc,
+        Trace::InstRecord *traceData) const
+    {
+        %(read_gaussmode)s;
+        %(op_decl)s;
+        %(op_rd)s;
+        %(code)s;
+        %(op_wb)s;
+        return NoFault;
+    }
+}};

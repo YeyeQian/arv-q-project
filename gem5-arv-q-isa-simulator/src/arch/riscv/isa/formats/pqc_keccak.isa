@@ -1,0 +1,75 @@
+def format KeccakLoadOp(code, *flags) {{
+    iop = InstObjParams(name, Name, 'VectorKeccakMacroInst', code, flags)
+    microop=InstObjParams(name+"_micro",Name+"Micro",'VectorKeccakMicroInst',code,flags)
+
+    header_output = KeccakMacroDeclare.subst(iop) + \
+                    KeccakMicroDeclare.subst(microop)
+
+    decoder_output = KeccakLoadMacroConstructor.subst(iop) + \
+                     KeccakLoadMicroConstructor.subst(microop)
+
+    decode_block = BasicDecode.subst(iop)
+
+    exec_output = KeccakLoadMicroExecute.subst(microop)
+}};
+
+def format KeccakStoreOp(code, *flags) {{
+    iop = InstObjParams(name, Name, 'VectorKeccakMacroInst', code, flags)
+    microop=InstObjParams(name+"_micro",Name+"Micro",'VectorKeccakMicroInst',code,flags)
+
+    header_output = KeccakMacroDeclare.subst(iop) + \
+                    KeccakMicroDeclare.subst(microop)
+
+    decoder_output = KeccakStoreMacroConstructor.subst(iop) + \
+                     KeccakStoreMicroConstructor.subst(microop)
+
+    decode_block = BasicDecode.subst(iop)
+
+    exec_output = KeccakStoreMicroExecute.subst(microop)
+}};
+
+
+def format KeccakInitOp(code, *flags) {{
+    iop = InstObjParams(name, Name, 'Keccak_initBase', code, flags)
+    header_output = KeccakInitDeclare.subst(iop)
+    decoder_output = KeccakInitConstructor.subst(iop)
+    decode_block = BasicDecode.subst(iop)
+    exec_output = KeccakInitExecute.subst(iop)
+}};
+
+
+def format KeccakAbsorbOp(code, *flags) {{
+    iop = InstObjParams(name, Name, 'Keccak_absorbBase', code, flags)
+
+    read_keccakmode = read_keccakmode_wrapper()
+    microop0 = InstObjParams('keccak_permu', 'Keccak_permu', 'Keccak_permuBase', 
+                            {'code': code, 'read_keccakmode': read_keccakmode}, 
+                            flags)
+    microop1 = InstObjParams('keccak_feedback', 'Keccak_feedback', 'Keccak_feedbackBase', 
+                            {'code': code, 'read_keccakmode': read_keccakmode}, 
+                            flags)
+
+    header_output = KeccakAbsorbDeclare.subst(iop)      + \
+                    KeccakPermuDeclare.subst(microop0)  + \
+                    KeccakFeedBackDeclare.subst(microop1)
+
+    decoder_output = KeccakAbsorbConstructor.subst(iop)     + \
+                     KeccakPermuConstructor.subst(microop0) + \
+                     KeccakFeedBackConstructor.subst(microop1)
+
+    decode_block = BasicDecode.subst(iop)
+
+    exec_output = KeccakPermuExecute.subst(microop0) +\
+                  KeccakFeedBackExecute.subst(microop1)
+}};
+
+def format KeccakSqueezeOp(code, *flags) {{
+    read_keccakmode = read_keccakmode_wrapper()
+    iop = InstObjParams(name, Name, 'Keccak_squeezeBase', 
+                            {'code': code, 'read_keccakmode': read_keccakmode}, 
+                            flags)    
+    header_output = KeccakSqueezeDeclare.subst(iop)
+    decoder_output = KeccakSqueezeConstructor.subst(iop)
+    decode_block = BasicDecode.subst(iop)
+    exec_output = KeccakSqueezeExecute.subst(iop)
+}};

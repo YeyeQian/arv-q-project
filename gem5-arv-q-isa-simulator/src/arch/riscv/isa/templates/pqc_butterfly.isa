@@ -1,0 +1,155 @@
+def template ButterflyMacroConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s)
+{
+    %(set_reg_idx_arr)s;
+    %(constructor)s;
+
+    const uint32_t LMUL = vtype_regs_per_group(vtype);
+    const int32_t vlmax = vtype_VLMAX(_machInst.vtype8, false);
+
+    // instruction limitations
+    panic_if(LMUL == 8, "LMUL=8 is illegal for butterfly inst (as widening inst)");
+    panic_if(vlmax != vl, "butterfly inst requests the vl equal to vlmax");
+    panic_if(_machInst.vtype8.vsew == 0b000, "vsew = 0b000, SEW=8, is not supported");
+    panic_if(_machInst.vtype8.vsew == 0b011, "vsew = 0b011, SEW=64, is not supported");
+    panic_if(_machInst.vm != 0b0, "vm should be 0");
+
+
+    uint16_t micro_vl = vlane;
+    uint32_t numMicroInst = vlmax / vlane;
+
+    StaticInstPtr microop;
+
+    // Allow one empty micro op to hold IsLastMicroop flag
+    for (int micro_index = 0; micro_index < numMicroInst; ++micro_index) {
+        uint16_t micro_src_regOffset = (micro_index * vlane) / elemPerVecReg;
+        uint16_t micro_dst_regOffset = (micro_index * 2*vlane) / elemPerVecReg;
+
+        microop = new %(class_name)sMicro<ElemType, DoubleElemType>(_machInst, micro_index, micro_vl, 
+                                                                    micro_src_regOffset, micro_dst_regOffset);
+        microop->setDelayedCommit();
+        this->microops.push_back(microop);
+    }
+
+    this->microops.front()->setFirstMicroop();
+    this->microops.back()->setLastMicroop();
+}
+
+}};
+   
+
+def template ButterflyMicroInstDeclare {{
+
+template<typename ElemType, typename DoubleElemType>
+class %(class_name)s : public %(base_class)s
+{
+private:
+    // source regsiter: vs1, vs2, vs3(old_vd), v0
+    RegId srcRegIdxArr[4];
+    RegId destRegIdxArr[1];
+public:
+    %(class_name)s(ExtMachInst _machInst, uint16_t _microIdx, uint16_t _microVl,
+                   uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset);
+    Fault execute(ExecContext* xc, Trace::InstRecord* traceData)const override;
+    using %(base_class)s::generateDisassembly;
+};
+
+}};
+
+def template ButterflyMicroInstConstructor {{
+
+template<typename ElemType, typename DoubleElemType>
+%(class_name)s<ElemType, DoubleElemType>::%(class_name)s(ExtMachInst _machInst,
+                                         uint16_t _microIdx, uint16_t _microVl, 
+                                         uint16_t _microSrcRegOffset, uint16_t _microDstRegOffset)
+    : %(base_class)s("%(mnemonic)s", _machInst, %(op_class)s,
+                     _microIdx, _microVl, _microSrcRegOffset, _microDstRegOffset)
+{
+    %(set_reg_idx_arr)s;
+    
+    _numSrcRegs = 0;
+    _numDestRegs = 0;
+
+    setDestRegIdx(_numDestRegs++, vecRegClass[_machInst.vd + _microDstRegOffset]); // bufferfly operation is widening inst
+    _numTypedDestRegs[VecRegClass]++;
+
+    // setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs1 + _microSrcRegOffset]);
+    // setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs2 + _microSrcRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs2 + _microSrcRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs1 + _microSrcRegOffset]);    
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[_machInst.vs3 + _microDstRegOffset]);
+    setSrcRegIdx(_numSrcRegs++, vecRegClass[0]);    // v0
+}
+
+}};
+
+
+def template ButterflyMicroInstExecute {{
+
+template<typename ElemType, typename DoubleElemType>
+Fault
+%(class_name)s<ElemType, DoubleElemType>::execute(ExecContext* xc,
+                                Trace::InstRecord* traceData) const
+{
+    using vu [[maybe_unused]] = std::make_unsigned_t<ElemType>;
+    using vi [[maybe_unused]] = std::make_signed_t<ElemType>;
+
+    using vu_double [[maybe_unused]] = std::make_unsigned_t<DoubleElemType>;
+    using vi_double [[maybe_unused]] = std::make_signed_t<DoubleElemType>;
+
+    [[maybe_unused]] constexpr size_t sew = sizeof(vu) * 8;
+
+    if (machInst.vill)
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    
+    %(read_modulusq)s;
+    %(read_qinv)s;
+    %(read_zeta_selMode)s;
+
+    // get destination vector register Vd
+    auto &tmp_d0 = *(RiscvISA::VecRegContainer *)
+		            xc->getWritableRegOperand(this, 0);
+	auto Vd = tmp_d0.as<vi>();
+
+    // get source vector register Vs2(srcv0), butterfly operation top half
+	RiscvISA::VecRegContainer tmp_s2;
+	xc->getRegOperand(this, 0, &tmp_s2);
+	auto Vs2 = tmp_s2.as<vi>();
+
+    // get source vector register Vs1(srcv1), butterfly operation bottom half
+	RiscvISA::VecRegContainer tmp_s1;
+	xc->getRegOperand(this, 1, &tmp_s1);
+	auto Vs1 = tmp_s1.as<vi>();
+
+    // copy old vd
+    [[maybe_unused]] RiscvISA::vreg_t old_vd;                        
+    [[maybe_unused]] decltype(Vd) old_Vd = nullptr;                  
+    xc->getRegOperand(this, 2, &old_vd);                           
+    old_Vd = old_vd.as<std::remove_reference_t<decltype(Vd[0])>>(); 
+    memcpy(Vd, old_Vd, VLENB);
+
+    // get source vector register v0
+	RiscvISA::VecRegContainer tmp_v0;
+	xc->getRegOperand(this, 3, &tmp_v0);
+	auto v0 = tmp_v0.as<vi>();
+
+    uint32_t start_pos = (microIdx * vlane) % elemPerVecReg;
+    uint32_t end_pos   = start_pos + this-> microVl;
+
+    for(uint32_t i = start_pos; i < end_pos; i++) {
+        %(exe_code)s;
+    }     
+
+    // write back the results
+    xc->setRegOperand(this, 0, &tmp_d0);
+    if (traceData) {
+        traceData->setData(tmp_d0);
+    };
+
+    return NoFault;
+}
+
+}};
